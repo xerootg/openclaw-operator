@@ -1350,10 +1350,15 @@ func buildSkillsInitContainer(instance *openclawv1alpha1.OpenClawInstance) *core
 // (e.g. `@openclaw/matrix`) also use `workspace:*` dependency markers that
 // raw npm rejects with EUNSUPPORTEDPROTOCOL (#505).
 func parsePluginEntry(entry string) string {
+	// --accept-capabilities: OpenClaw 2026.8.x gates plugins that declare
+	// capabilities behind an explicit consent prompt; a non-interactive install
+	// (the init container) otherwise fails with "requires capability consent"
+	// and the gateway never starts. The operator installs only the plugins the
+	// user listed in spec.plugins, so consent is implied.
 	if pkg, ok := strings.CutPrefix(entry, "npm:"); ok {
-		return fmt.Sprintf("openclaw plugins install --force %s", shellQuote("npm:"+pkg))
+		return fmt.Sprintf("openclaw plugins install --force --accept-capabilities %s", shellQuote("npm:"+pkg))
 	}
-	return fmt.Sprintf("openclaw plugins install --force %s", shellQuote("clawhub:"+entry))
+	return fmt.Sprintf("openclaw plugins install --force --accept-capabilities %s", shellQuote("clawhub:"+entry))
 }
 
 // BuildPluginsScript generates the shell script for the plugins init container.
