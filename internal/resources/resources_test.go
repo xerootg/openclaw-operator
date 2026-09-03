@@ -2416,13 +2416,12 @@ func TestBuildConfigMapFromBytes_EnrichesExternalConfig(t *testing.T) {
 		t.Errorf("gateway.bind = %v, want %q", gw["bind"], "loopback")
 	}
 
-	// Verify device auth was injected
-	controlUI, ok := gw["controlUi"].(map[string]interface{})
-	if !ok {
-		t.Fatal("expected gateway.controlUi key after enrichment")
-	}
-	if controlUI["dangerouslyDisableDeviceAuth"] != true {
-		t.Errorf("gateway.controlUi.dangerouslyDisableDeviceAuth = %v, want true", controlUI["dangerouslyDisableDeviceAuth"])
+	// Device auth is no longer injected (retired in OpenClaw 2026.8.x). The
+	// enrichment must not create gateway.controlUi or set the key.
+	if controlUI, ok := gw["controlUi"].(map[string]interface{}); ok {
+		if _, present := controlUI["dangerouslyDisableDeviceAuth"]; present {
+			t.Errorf("gateway.controlUi.dangerouslyDisableDeviceAuth should be absent, got %v", controlUI["dangerouslyDisableDeviceAuth"])
+		}
 	}
 }
 
@@ -2907,16 +2906,14 @@ func TestEnrichConfigWithDeviceAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	gw, ok := cfg["gateway"].(map[string]interface{})
-	if !ok {
-		t.Fatal("expected gateway key")
-	}
-	controlUI, ok := gw["controlUi"].(map[string]interface{})
-	if !ok {
-		t.Fatal("expected gateway.controlUi key")
-	}
-	if controlUI["dangerouslyDisableDeviceAuth"] != true {
-		t.Errorf("gateway.controlUi.dangerouslyDisableDeviceAuth = %v, want true", controlUI["dangerouslyDisableDeviceAuth"])
+	// Device auth injection was retired in OpenClaw 2026.8.x, so enrichment is a
+	// no-op: an empty input must not gain a gateway.controlUi key.
+	if gw, ok := cfg["gateway"].(map[string]interface{}); ok {
+		if controlUI, ok := gw["controlUi"].(map[string]interface{}); ok {
+			if _, present := controlUI["dangerouslyDisableDeviceAuth"]; present {
+				t.Errorf("gateway.controlUi.dangerouslyDisableDeviceAuth should be absent, got %v", controlUI["dangerouslyDisableDeviceAuth"])
+			}
+		}
 	}
 }
 
@@ -2952,12 +2949,11 @@ func TestEnrichConfigWithDeviceAuth_PreservesOtherFields(t *testing.T) {
 	}
 
 	gw := cfg["gateway"].(map[string]interface{})
-	controlUI, ok := gw["controlUi"].(map[string]interface{})
-	if !ok {
-		t.Fatal("gateway.controlUi should be created")
-	}
-	if controlUI["dangerouslyDisableDeviceAuth"] != true {
-		t.Errorf("gateway.controlUi.dangerouslyDisableDeviceAuth = %v, want true", controlUI["dangerouslyDisableDeviceAuth"])
+	// Device auth injection was retired, so gateway.controlUi must NOT be created.
+	if controlUI, ok := gw["controlUi"].(map[string]interface{}); ok {
+		if _, present := controlUI["dangerouslyDisableDeviceAuth"]; present {
+			t.Errorf("gateway.controlUi.dangerouslyDisableDeviceAuth should be absent, got %v", controlUI["dangerouslyDisableDeviceAuth"])
+		}
 	}
 	auth, ok := gw["auth"].(map[string]interface{})
 	if !ok {
@@ -9350,11 +9346,10 @@ func TestBuildConfigMap_ChromiumBrowserConfig(t *testing.T) {
 		t.Errorf("browser.attachOnly = %v, want true", browser["attachOnly"])
 	}
 
-	// remoteCdpTimeoutMs gives the browser service time to become ready,
-	// preventing permanent failure when tool registration fires first.
-	timeout, ok := browser["remoteCdpTimeoutMs"].(float64)
-	if !ok || timeout != 30000 {
-		t.Errorf("browser.remoteCdpTimeoutMs = %v, want 30000", browser["remoteCdpTimeoutMs"])
+	// remoteCdpTimeoutMs was retired in OpenClaw 2026.8.x and is no longer
+	// injected by default; the key must be absent when the user didn't set it.
+	if _, present := browser["remoteCdpTimeoutMs"]; present {
+		t.Errorf("browser.remoteCdpTimeoutMs should be absent by default, got %v", browser["remoteCdpTimeoutMs"])
 	}
 
 	profiles, ok := browser["profiles"].(map[string]interface{})
@@ -9373,8 +9368,10 @@ func TestBuildConfigMap_ChromiumBrowserConfig(t *testing.T) {
 		if p["cdpUrl"] != expectedCDP {
 			t.Errorf("browser.profiles.%s.cdpUrl = %v, want %q", name, p["cdpUrl"], expectedCDP)
 		}
-		if p["color"] != "#4285F4" {
-			t.Errorf("browser.profiles.%s.color = %v, want %q", name, p["color"], "#4285F4")
+		// A default profile "color" is no longer injected (retired in OpenClaw
+		// 2026.8.x); it must be absent when the user didn't set it.
+		if _, present := p["color"]; present {
+			t.Errorf("browser.profiles.%s.color should be absent by default, got %v", name, p["color"])
 		}
 	}
 }
