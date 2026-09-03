@@ -1452,6 +1452,13 @@ func buildPluginsInitContainer(instance *openclawv1alpha1.OpenClawInstance) *cor
 			RunAsNonRoot:             Ptr(podRunAsNonRoot(instance)),
 			Capabilities: &corev1.Capabilities{
 				Drop: []corev1.Capability{"ALL"},
+				// FOWNER: OpenClaw 2026.8.x links each plugin's "openclaw"
+				// peerDependency to the root-owned /app and then chmods it during
+				// install. As non-root that fchmod fails with EPERM and the
+				// gateway never starts. FOWNER lets the fchmod succeed without
+				// running as root; the container still drops every other
+				// capability and cannot escalate privileges.
+				Add: []corev1.Capability{"FOWNER"},
 			},
 		},
 		VolumeMounts: mounts,
