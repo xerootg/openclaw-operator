@@ -6680,7 +6680,7 @@ func TestBuildStatefulSet_SkillsOnly_HasBothInitContainers(t *testing.T) {
 
 func TestParsePluginEntry_Basic(t *testing.T) {
 	got := parsePluginEntry("@martian-engineering/lossless-claw")
-	want := "openclaw plugins install --force 'clawhub:@martian-engineering/lossless-claw'"
+	want := "openclaw plugins install --force --accept-capabilities 'clawhub:@martian-engineering/lossless-claw'"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -6688,7 +6688,7 @@ func TestParsePluginEntry_Basic(t *testing.T) {
 
 func TestParsePluginEntry_WithNpmPrefix(t *testing.T) {
 	got := parsePluginEntry("npm:@openclaw/some-plugin")
-	want := "openclaw plugins install --force 'npm:@openclaw/some-plugin'"
+	want := "openclaw plugins install --force --accept-capabilities 'npm:@openclaw/some-plugin'"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -6696,7 +6696,7 @@ func TestParsePluginEntry_WithNpmPrefix(t *testing.T) {
 
 func TestParsePluginEntry_Unscoped(t *testing.T) {
 	got := parsePluginEntry("some-plugin")
-	want := "openclaw plugins install --force 'clawhub:some-plugin'"
+	want := "openclaw plugins install --force --accept-capabilities 'clawhub:some-plugin'"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -6706,9 +6706,9 @@ func TestParsePluginEntry_Versioned(t *testing.T) {
 	cases := []struct {
 		entry, want string
 	}{
-		{"brave-plugin@1.2.3", "openclaw plugins install --force 'clawhub:brave-plugin@1.2.3'"},
-		{"@openclaw/brave-plugin@1.2.3", "openclaw plugins install --force 'clawhub:@openclaw/brave-plugin@1.2.3'"},
-		{"npm:@openclaw/brave-plugin@1.2.3", "openclaw plugins install --force 'npm:@openclaw/brave-plugin@1.2.3'"},
+		{"brave-plugin@1.2.3", "openclaw plugins install --force --accept-capabilities 'clawhub:brave-plugin@1.2.3'"},
+		{"@openclaw/brave-plugin@1.2.3", "openclaw plugins install --force --accept-capabilities 'clawhub:@openclaw/brave-plugin@1.2.3'"},
+		{"npm:@openclaw/brave-plugin@1.2.3", "openclaw plugins install --force --accept-capabilities 'npm:@openclaw/brave-plugin@1.2.3'"},
 	}
 	for _, c := range cases {
 		if got := parsePluginEntry(c.entry); got != c.want {
@@ -6738,10 +6738,10 @@ func TestBuildPluginsScript_WithPlugins(t *testing.T) {
 	if !strings.Contains(script, "mkdir -p /home/openclaw/.openclaw/extensions") {
 		t.Error("script should ensure ~/.openclaw/extensions exists")
 	}
-	if !strings.Contains(script, "openclaw plugins install --force 'clawhub:@martian-engineering/lossless-claw'") {
+	if !strings.Contains(script, "openclaw plugins install --force --accept-capabilities 'clawhub:@martian-engineering/lossless-claw'") {
 		t.Errorf("script should install lossless-claw via openclaw CLI, got:\n%s", script)
 	}
-	if !strings.Contains(script, "openclaw plugins install --force 'clawhub:another-plugin'") {
+	if !strings.Contains(script, "openclaw plugins install --force --accept-capabilities 'clawhub:another-plugin'") {
 		t.Errorf("script should install another-plugin via openclaw CLI, got:\n%s", script)
 	}
 	// Regression guard: don't emit the old broken layout
@@ -6763,7 +6763,7 @@ func TestBuildPluginsScript_UsesClawhubCLI(t *testing.T) {
 
 	// The CLI handles workspace:* dependency markers correctly, whereas raw
 	// `npm install` rejects them with EUNSUPPORTEDPROTOCOL (#505).
-	want := "openclaw plugins install --force 'clawhub:@openclaw/matrix'"
+	want := "openclaw plugins install --force --accept-capabilities 'clawhub:@openclaw/matrix'"
 	if !strings.Contains(script, want) {
 		t.Errorf("expected %q in script, got:\n%s", want, script)
 	}
