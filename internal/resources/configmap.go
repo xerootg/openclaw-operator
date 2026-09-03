@@ -285,12 +285,18 @@ service:
 `, OTelHTTPReceiverPort, MetricsPort(instance))
 }
 
-// enrichConfigWithDeviceAuth injects gateway.controlUi.dangerouslyDisableDeviceAuth=true
-// into the config JSON. Device pairing is fundamentally incompatible with Kubernetes
-// because (1) users cannot approve pairing from inside a container, (2) connections
-// always come through the nginx proxy sidecar (non-local), and (3) mDNS does not work
-// in K8s. If the user has already set the field, the config is returned unchanged.
+// enrichConfigWithDeviceAuth previously injected
+// gateway.controlUi.dangerouslyDisableDeviceAuth=true. As of OpenClaw 2026.8.x that
+// key is retired: the runtime logs it as a legacy key ("run openclaw doctor --fix")
+// and Control UI browsers now pair through the normal device flow. Injecting it is at
+// best noise and blocks a clean config, so this is now a no-op. Kept as a seam in case
+// a future runtime needs a replacement knob.
 func enrichConfigWithDeviceAuth(configJSON []byte) ([]byte, error) {
+	return configJSON, nil
+}
+
+// enrichConfigWithDeviceAuthLegacy is the pre-2026.8 behavior, retained for reference.
+func enrichConfigWithDeviceAuthLegacy(configJSON []byte) ([]byte, error) {
 	var config map[string]interface{}
 	if err := json.Unmarshal(configJSON, &config); err != nil {
 		return configJSON, nil // not a JSON object, return unchanged
@@ -449,13 +455,10 @@ func enrichConfigWithBrowser(configJSON []byte) ([]byte, error) {
 		browser["attachOnly"] = true
 	}
 
-	// remoteCdpTimeoutMs gives the browser service time to become ready.
-	// OpenClaw's tool registration can fire before the browser service is
-	// fully initialized. Without a timeout, the failure is cached permanently
-	// for the pod's lifetime.
-	if _, ok := browser["remoteCdpTimeoutMs"]; !ok {
-		browser["remoteCdpTimeoutMs"] = float64(30000)
-	}
+	// NOTE: remoteCdpTimeoutMs was injected here (default 30000) to give the
+	// browser service time to become ready. OpenClaw 2026.8.x retired the key and
+	// the runtime now rejects it as an unrecognized key, failing config validation,
+	// so it is no longer set. Browser-service readiness is handled elsewhere.
 
 	profiles, _ := browser["profiles"].(map[string]interface{})
 	if profiles == nil {
@@ -485,10 +488,9 @@ func enrichConfigWithBrowser(configJSON []byte) ([]byte, error) {
 			}
 		}
 
-		// color is required by OpenClaw's config validation
-		if _, hasColor := profile["color"]; !hasColor {
-			profile["color"] = "#4285F4"
-		}
+		// NOTE: a default profile "color" (#4285F4) was injected here because older
+		// OpenClaw builds required it. 2026.8.x retired it and the runtime now rejects
+		// "color" as an unrecognized key, failing config validation, so it is no longer set.
 
 		profiles[profileName] = profile
 	}
