@@ -295,35 +295,6 @@ func enrichConfigWithDeviceAuth(configJSON []byte) ([]byte, error) {
 	return configJSON, nil
 }
 
-// enrichConfigWithDeviceAuthLegacy is the pre-2026.8 behavior, retained for reference.
-func enrichConfigWithDeviceAuthLegacy(configJSON []byte) ([]byte, error) {
-	var config map[string]interface{}
-	if err := json.Unmarshal(configJSON, &config); err != nil {
-		return configJSON, nil // not a JSON object, return unchanged
-	}
-
-	gw, _ := config["gateway"].(map[string]interface{})
-	if gw == nil {
-		gw = make(map[string]interface{})
-	}
-
-	controlUI, _ := gw["controlUi"].(map[string]interface{})
-	if controlUI == nil {
-		controlUI = make(map[string]interface{})
-	}
-
-	// If the user already set dangerouslyDisableDeviceAuth, don't override
-	if _, ok := controlUI["dangerouslyDisableDeviceAuth"]; ok {
-		return configJSON, nil
-	}
-
-	controlUI["dangerouslyDisableDeviceAuth"] = true
-	gw["controlUi"] = controlUI
-	config["gateway"] = gw
-
-	return json.Marshal(config)
-}
-
 // enrichConfigWithTailscale injects Tailscale-related settings into the config JSON.
 // The Tailscale sidecar handles serve/funnel declaratively via TS_SERVE_CONFIG,
 // so we no longer set gateway.tailscale.mode or gateway.tailscale.resetOnExit.
