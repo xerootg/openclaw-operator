@@ -12705,8 +12705,9 @@ func TestBuildStatefulSet_ContainerLevelRunAsNonRootOverride(t *testing.T) {
 		if ic.SecurityContext == nil || ic.SecurityContext.RunAsNonRoot == nil {
 			continue
 		}
-		// Skip ollama init (runs as root)
-		if ic.Name == "init-ollama" {
+		// Skip inits that intentionally run as root (container-level override):
+		// init-ollama pulls models; init-chown-home fixes PVC ownership.
+		if ic.Name == "init-ollama" || ic.Name == "init-chown-home" {
 			continue
 		}
 		if !*ic.SecurityContext.RunAsNonRoot {
