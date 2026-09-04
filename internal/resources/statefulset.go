@@ -537,6 +537,34 @@ func hasUserEnv(instance *openclawv1alpha1.OpenClawInstance, name string) bool {
 func buildInitContainers(instance *openclawv1alpha1.OpenClawInstance, externalWorkspaceFiles map[string]string, additionalExternalFiles map[string]map[string]string, skillPacks *ResolvedSkillPacks) []corev1.Container {
 	var initContainers []corev1.Container
 
+	// init-chown-home MUST run first. The "data" PVC is mounted at the runtime
+	// user's ~/.openclaw (the volume root) with ~/.local, ~/.cache and ~/.config
+	// as subPaths. The kubelet mounts the volume root owned by root (fsGroup only
+	// changes the group, not the owner), so as the non-root runtime user the
+	// OpenClaw 2026.8.x plugin installer's fchmod on the home tree fails with
+	// "EPERM: operation not permitted" and the gateway never starts. chown the
+	// volume to the runtime uid so every later init and the plugin install own
+	// what they touch. Runs as root via a container-level override of the pod's
+	// RunAsNonRoot; it still drops every capability except CHOWN and cannot
+	// escalate privileges.
+	initContainers = append(initContainers, corev1.Container{
+		Name:            "init-chown-home",
+		Image:           ApplyRegistryOverride("docker.io/library/busybox:1.37", instance.Spec.Registry),
+		Command:         []string{"sh", "-c", "chown -R 1000:1000 /data"},
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		SecurityContext: &corev1.SecurityContext{
+			RunAsUser:                Ptr(int64(0)),
+			RunAsNonRoot:             Ptr(false),
+			AllowPrivilegeEscalation: Ptr(false),
+			ReadOnlyRootFilesystem:   Ptr(true),
+			Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{"ALL"},
+				Add:  []corev1.Capability{"CHOWN"},
+			},
+		},
+		VolumeMounts: []corev1.VolumeMount{{Name: "data", MountPath: "/data"}},
+	})
+
 	// Config/workspace init container (only if there's something to do)
 	if script := BuildInitScript(instance, externalWorkspaceFiles, additionalExternalFiles, skillPacks); script != "" {
 		mounts := []corev1.VolumeMount{
