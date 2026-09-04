@@ -548,10 +548,12 @@ func buildInitContainers(instance *openclawv1alpha1.OpenClawInstance, externalWo
 	// RunAsNonRoot; it still drops every capability except CHOWN and cannot
 	// escalate privileges.
 	initContainers = append(initContainers, corev1.Container{
-		Name:            "init-chown-home",
-		Image:           ApplyRegistryOverride("docker.io/library/busybox:1.37", instance.Spec.Registry),
-		Command:         []string{"sh", "-c", "chown -R 1000:1000 /data"},
-		ImagePullPolicy: corev1.PullIfNotPresent,
+		Name:                     "init-chown-home",
+		Image:                    ApplyRegistryOverride("docker.io/library/busybox:1.37", instance.Spec.Registry),
+		Command:                  []string{"sh", "-c", "chown -R 1000:1000 /data"},
+		ImagePullPolicy:          corev1.PullIfNotPresent,
+		TerminationMessagePath:   corev1.TerminationMessagePathDefault,
+		TerminationMessagePolicy: corev1.TerminationMessageReadFile,
 		SecurityContext: &corev1.SecurityContext{
 			RunAsUser:                Ptr(int64(0)),
 			RunAsNonRoot:             Ptr(false),
