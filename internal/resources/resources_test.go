@@ -4601,9 +4601,9 @@ func findVolume(volumes []corev1.Volume, name string) *corev1.Volume {
 // Prefer this over indexing by position: init-chown-home is now the first init
 // container, so positional indices shifted by one.
 // findInitContainer returns the init container with the given name, or nil.
+// Name-generic on purpose so future tests can reuse it.
 //
-//nolint:unparam // callers currently all look up init-config, but the helper is
-// name-generic on purpose so future tests can reuse it.
+//nolint:unparam // callers currently all pass "init-config"; kept generic by design.
 func findInitContainer(containers []corev1.Container, name string) *corev1.Container {
 	for i := range containers {
 		if containers[i].Name == name {
