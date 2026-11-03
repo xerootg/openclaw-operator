@@ -77,7 +77,7 @@ Every request is validated against the instance's allowlist policy. Protected co
 | **Config Modes** | Merge or overwrite | `overwrite` replaces config on restart; `merge` deep-merges with PVC config, preserving runtime changes. Config is restored on every container restart via init container. |
 | **Force Paths** | Operator-owned paths under merge | `config.forcePaths` lists dot-paths the init container rebuilds from the CR on every restart even under `mergeMode: merge` -- lets managed deployers keep operator-owned config (auth, allowed providers, sandbox image) immune to tenant edits while user-owned config persists |
 | **Skills** | Declarative install | Install ClawHub skills, npm packages, or GitHub-hosted skill packs via `spec.skills` - supports `npm:` and `pack:` prefixes. Additional workspaces can declare their own workspace-scoped skills via `additionalWorkspaces[].skills` |
-| **Plugins** | Declarative install | Install OpenClaw plugins via `spec.plugins` - resolved through the OpenClaw CLI ClawHub installer in a secure init container |
+| **Plugins** | Declarative install | Install OpenClaw plugins via `spec.plugins` - resolved through the OpenClaw CLI ClawHub installer in a secure init container with private temporary storage |
 | **Runtime Deps** | pnpm & Python/uv | Built-in init containers install pnpm (via corepack) or Python 3.12 + uv for MCP servers and skills |
 | **Auto-Update** | OCI registry polling | Opt-in version tracking: checks the registry for new semver releases, backs up first, rolls out, and auto-rolls back if the new version fails health checks |
 | **Scalable** | Auto-scaling | HPA integration with CPU and memory metrics, min/max replica bounds, automatic StatefulSet replica management |
@@ -665,6 +665,8 @@ spec:
 
 Plugin entries are resolved through the OpenClaw CLI's ClawHub installer, not raw `npm install`. An optional `npm:` prefix is accepted for compatibility and stripped before installation, so `npm:@scope/plugin` and `@scope/plugin` both run as `openclaw plugins install clawhub:@scope/plugin`. Use `spec.skills` when you need npm package source selection for skills.
 
+The operator runs `init-plugin-scratch` before `init-plugins` to create a private `0700` temporary directory owned by the installer UID. Only that subdirectory is mounted at `/tmp` in the installer. The main container similarly mounts a `1777` (sticky) subdirectory prepared by `init-tmp-dir`. This avoids exposing `emptyDir` roots with fsGroup-managed mode `2777`, which OpenClaw 2026.10.x rejects as unsafe. No additional configuration is required.
+
 This is the layout the OpenClaw gateway's plugin discovery expects - it scans direct subdirectories of `~/.openclaw/extensions/` for plugin manifests and skips `node_modules/` entirely. The init container shells out to `openclaw plugins install clawhub:<pkg>` so plugins published with `workspace:*` dependency markers, such as the first-party `@openclaw/matrix`, resolve correctly. Raw `npm install` rejects those with `EUNSUPPORTEDPROTOCOL`.
 
 npm lifecycle scripts are disabled globally on the init container (`NPM_CONFIG_IGNORE_SCRIPTS=true`) to mitigate supply chain attacks. The PVC backs `~/.openclaw/`, so installs persist across pod restarts.
@@ -1220,7 +1222,7 @@ The operator follows a **secure-by-default** philosophy. Every instance ships wi
 ### Defaults
 
 - **Non-root execution**: containers run as UID 1000; root (UID 0) is blocked by the validating webhook (exception: Ollama sidecar requires root per the official image)
-- **Read-only root filesystem**: enabled by default for the main container and the Chromium sidecar; the PVC at `~/.openclaw/` provides writable home, and a `/tmp` emptyDir handles temp files
+- **Read-only root filesystem**: enabled by default for the main container and the Chromium sidecar; the PVC at `~/.openclaw/` provides writable home, and a sticky `1777` subdirectory of an emptyDir provides the main container's `/tmp`
 - **All capabilities dropped**: no ambient Linux capabilities
 - **Seccomp RuntimeDefault**: syscall filtering enabled
 - **Default-deny NetworkPolicy**: only DNS (53) and HTTPS (443) egress allowed; ingress limited to same namespace. Metrics ingress is a separate rule that can be restricted independently -- see [Restricting who can scrape metrics](#restricting-who-can-scrape-metrics)

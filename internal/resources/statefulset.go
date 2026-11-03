@@ -340,6 +340,7 @@ func buildMainContainer(instance *openclawv1alpha1.OpenClawInstance, gatewayToke
 			{
 				Name:      "tmp",
 				MountPath: "/tmp",
+				SubPath:   MainTmpSubPath,
 			},
 		},
 	}
@@ -667,8 +668,11 @@ func buildInitContainers(instance *openclawv1alpha1.OpenClawInstance, externalWo
 
 	// Plugins init container (only if plugins are defined)
 	if pluginsContainer := buildPluginsInitContainer(instance); pluginsContainer != nil {
+		initContainers = append(initContainers, buildPluginScratchInitContainer(pluginsContainer))
 		initContainers = append(initContainers, *pluginsContainer)
 	}
+
+	initContainers = append(initContainers, buildTmpDirInitContainer(instance))
 
 	// Ollama model-pulling init container (only if enabled and models are specified)
 	if instance.Spec.Ollama.Enabled && len(instance.Spec.Ollama.Models) > 0 {
@@ -1430,7 +1434,7 @@ func buildPluginsInitContainer(instance *openclawv1alpha1.OpenClawInstance) *cor
 		{Name: "data", MountPath: "/home/openclaw/.openclaw"},
 		{Name: "data", MountPath: "/home/openclaw/.local", SubPath: ".local"},
 		{Name: "data", MountPath: "/home/openclaw/.cache", SubPath: ".cache"},
-		{Name: "plugins-tmp", MountPath: "/tmp"},
+		{Name: pluginScratchVolume, MountPath: "/tmp", SubPath: "private"},
 	}
 
 	env := []corev1.EnvVar{
@@ -1492,6 +1496,34 @@ func buildPluginsInitContainer(instance *openclawv1alpha1.OpenClawInstance) *cor
 			},
 		},
 		VolumeMounts: mounts,
+	}
+}
+
+// TmpDirInitContainerName prepares the main container's sticky /tmp.
+const TmpDirInitContainerName = "init-tmp-dir"
+
+// MainTmpSubPath hides the fsGroup-managed volume root from the main container.
+const MainTmpSubPath = "tmp"
+
+// Create an owned subdirectory: the non-root UID cannot chmod the volume root.
+// chmod after mkdir clears inherited setgid and restores sticky protection on retries.
+func buildTmpDirInitContainer(instance *openclawv1alpha1.OpenClawInstance) corev1.Container {
+	return corev1.Container{
+		Name:                     TmpDirInitContainerName,
+		Image:                    ApplyRegistryOverride("docker.io/library/busybox:1.37", instance.Spec.Registry),
+		Command:                  []string{"sh", "-c", fmt.Sprintf("set -e\nmkdir -p /tmp-volume/%[1]s\nchmod 01777 /tmp-volume/%[1]s", MainTmpSubPath)},
+		ImagePullPolicy:          corev1.PullIfNotPresent,
+		TerminationMessagePath:   corev1.TerminationMessagePathDefault,
+		TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+		SecurityContext: &corev1.SecurityContext{
+			AllowPrivilegeEscalation: Ptr(false),
+			ReadOnlyRootFilesystem:   Ptr(true),
+			RunAsUser:                buildContainerSecurityContext(instance).RunAsUser,
+			RunAsNonRoot:             Ptr(podRunAsNonRoot(instance)),
+			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+			SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+		},
+		VolumeMounts: []corev1.VolumeMount{{Name: "tmp", MountPath: "/tmp-volume"}},
 	}
 }
 

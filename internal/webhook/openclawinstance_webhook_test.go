@@ -1542,6 +1542,20 @@ func TestValidateCreate_InitContainers_ReservedName_InitPython(t *testing.T) {
 	}
 }
 
+func TestValidateCreate_InitContainers_ReservedTmpNames(t *testing.T) {
+	for _, name := range []string{"init-plugin-scratch", "init-tmp-dir"} {
+		t.Run(name, func(t *testing.T) {
+			v := &OpenClawInstanceValidator{}
+			instance := newTestInstance()
+			instance.Spec.InitContainers = []corev1.Container{{Name: name, Image: "busybox:1.37"}}
+			_, err := v.ValidateCreate(context.Background(), instance)
+			if err == nil || !strings.Contains(err.Error(), "reserved") {
+				t.Fatalf("expected reserved name error for %q, got %v", name, err)
+			}
+		})
+	}
+}
+
 func TestValidateCreate_InitContainers_EmptyName(t *testing.T) {
 	v := &OpenClawInstanceValidator{}
 	instance := newTestInstance()

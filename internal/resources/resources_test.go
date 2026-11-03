@@ -879,8 +879,8 @@ func TestBuildStatefulSet_ConfigVolume_RawConfig(t *testing.T) {
 
 	// Init container should copy config from ConfigMap to data volume
 	initContainers := sts.Spec.Template.Spec.InitContainers
-	if len(initContainers) != 5 {
-		t.Fatalf("expected 5 init containers (init-chown-home + init-config + init-uv + init-pip + init-plugin-runtime-deps), got %d", len(initContainers))
+	if len(initContainers) != 6 {
+		t.Fatalf("expected 6 init containers (init-chown-home + init-config + init-uv + init-pip + init-plugin-runtime-deps + init-tmp-dir), got %d", len(initContainers))
 	}
 	initC := findInitContainer(initContainers, "init-config")
 	if initC == nil {
@@ -924,8 +924,8 @@ func TestBuildStatefulSet_ConfigVolume_ConfigMapRef(t *testing.T) {
 	// The controller reads the external CM and writes enriched content into the
 	// operator-managed CM under "openclaw.json", so the init container always uses that key.
 	initContainers := sts.Spec.Template.Spec.InitContainers
-	if len(initContainers) != 5 {
-		t.Fatalf("expected 5 init containers (init-chown-home + init-config + init-uv + init-pip + init-plugin-runtime-deps), got %d", len(initContainers))
+	if len(initContainers) != 6 {
+		t.Fatalf("expected 6 init containers (init-chown-home + init-config + init-uv + init-pip + init-plugin-runtime-deps + init-tmp-dir), got %d", len(initContainers))
 	}
 	initC := findInitContainer(initContainers, "init-config")
 	if initC == nil {
@@ -962,8 +962,8 @@ func TestBuildStatefulSet_ConfigMapRef_DefaultKey(t *testing.T) {
 
 	// Init container should use "openclaw.json" (operator-managed key)
 	initContainers := sts.Spec.Template.Spec.InitContainers
-	if len(initContainers) != 5 {
-		t.Fatalf("expected 5 init containers (init-chown-home + init-config + init-uv + init-pip + init-plugin-runtime-deps), got %d", len(initContainers))
+	if len(initContainers) != 6 {
+		t.Fatalf("expected 6 init containers (init-chown-home + init-config + init-uv + init-pip + init-plugin-runtime-deps + init-tmp-dir), got %d", len(initContainers))
 	}
 	initC := findInitContainer(initContainers, "init-config")
 	if initC == nil {
@@ -990,9 +990,9 @@ func TestBuildStatefulSet_VanillaDeployment_HasInitContainer(t *testing.T) {
 
 	sts := BuildStatefulSet(instance, "", nil, nil, nil)
 
-	// Vanilla deployments get init-chown-home + init-config + init-uv + init-pip + init-plugin-runtime-deps
-	if len(sts.Spec.Template.Spec.InitContainers) != 5 {
-		t.Fatalf("expected 5 init containers for vanilla deployment, got %d", len(sts.Spec.Template.Spec.InitContainers))
+	// Vanilla deployments get init-chown-home + init-config + init-uv + init-pip + init-plugin-runtime-deps + init-tmp-dir
+	if len(sts.Spec.Template.Spec.InitContainers) != 6 {
+		t.Fatalf("expected 6 init containers for vanilla deployment, got %d", len(sts.Spec.Template.Spec.InitContainers))
 	}
 	if sts.Spec.Template.Spec.InitContainers[0].Name != "init-chown-home" {
 		t.Errorf("first init container name = %q, want %q", sts.Spec.Template.Spec.InitContainers[0].Name, "init-chown-home")
@@ -7987,8 +7987,8 @@ func TestBuildStatefulSet_CustomInitContainers_AfterOperatorManaged(t *testing.T
 	sts := BuildStatefulSet(instance, "", nil, nil, nil)
 	initContainers := sts.Spec.Template.Spec.InitContainers
 
-	if len(initContainers) != 7 {
-		t.Fatalf("expected 7 init containers, got %d", len(initContainers))
+	if len(initContainers) != 8 {
+		t.Fatalf("expected 8 init containers, got %d", len(initContainers))
 	}
 	if initContainers[0].Name != "init-chown-home" {
 		t.Errorf("initContainers[0] = %q, want init-chown-home", initContainers[0].Name)
@@ -8008,8 +8008,11 @@ func TestBuildStatefulSet_CustomInitContainers_AfterOperatorManaged(t *testing.T
 	if initContainers[5].Name != "init-skills" {
 		t.Errorf("initContainers[5] = %q, want init-skills", initContainers[5].Name)
 	}
-	if initContainers[6].Name != "user-init" {
-		t.Errorf("initContainers[6] = %q, want user-init", initContainers[6].Name)
+	if initContainers[6].Name != TmpDirInitContainerName {
+		t.Errorf("initContainers[6] = %q, want %q", initContainers[6].Name, TmpDirInitContainerName)
+	}
+	if initContainers[7].Name != "user-init" {
+		t.Errorf("initContainers[7] = %q, want user-init", initContainers[7].Name)
 	}
 }
 
@@ -8389,7 +8392,7 @@ func TestBuildStatefulSet_RuntimeDeps_InitContainerOrder(t *testing.T) {
 	sts := BuildStatefulSet(instance, "", nil, nil, nil)
 	initContainers := sts.Spec.Template.Spec.InitContainers
 
-	expected := []string{"init-chown-home", "init-config", "init-uv", "init-pip", "init-plugin-runtime-deps", "init-pnpm", "init-python", "init-skills", "user-init"}
+	expected := []string{"init-chown-home", "init-config", "init-uv", "init-pip", "init-plugin-runtime-deps", "init-pnpm", "init-python", "init-skills", TmpDirInitContainerName, "user-init"}
 	if len(initContainers) != len(expected) {
 		t.Fatalf("expected %d init containers, got %d: %v", len(expected), len(initContainers),
 			func() []string {
