@@ -47,6 +47,17 @@ func newTestInstance(name string) *openclawv1alpha1.OpenClawInstance {
 	}
 }
 
+func assertResourceQuantity(t *testing.T, resources corev1.ResourceList, name corev1.ResourceName, expected string) {
+	t.Helper()
+	got, ok := resources[name]
+	if !ok {
+		t.Fatalf("resource %s not found", name)
+	}
+	if got.Cmp(resource.MustParse(expected)) != 0 {
+		t.Errorf("resource %s = %s, want %s", name, got.String(), expected)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // common.go tests
 // ---------------------------------------------------------------------------
@@ -1847,6 +1858,56 @@ func TestBuildNetworkPolicy_Default(t *testing.T) {
 	}
 }
 
+func TestBuildNetworkPolicy_SameNamespaceIngressDisabled(t *testing.T) {
+	instance := newTestInstance("np-explicit-ingress")
+	instance.Spec.Security.NetworkPolicy.AllowSameNamespaceIngress = Ptr(false)
+	instance.Spec.Security.NetworkPolicy.AllowedIngressNamespaces = []string{"ingress-system"}
+	instance.Spec.Observability.Metrics.Enabled = Ptr(false)
+
+	np := BuildNetworkPolicy(instance)
+	if len(np.Spec.Ingress) != 1 {
+		t.Fatalf("expected only the explicit ingress rule, got %d", len(np.Spec.Ingress))
+	}
+
+	peer := np.Spec.Ingress[0].From[0]
+	if peer.NamespaceSelector == nil {
+		t.Fatal("explicit ingress rule should have a namespace selector")
+	}
+	if got := peer.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"]; got != "ingress-system" {
+		t.Errorf("ingress namespace selector = %q, want ingress-system", got)
+	}
+	if len(np.Spec.Ingress[0].Ports) != 2 {
+		t.Fatalf("explicit ingress rule has %d ports, want 2", len(np.Spec.Ingress[0].Ports))
+	}
+	assertNPPort(t, np.Spec.Ingress[0].Ports, GatewayProxyPort)
+	assertNPPort(t, np.Spec.Ingress[0].Ports, CanvasProxyPort)
+}
+
+func TestBuildNetworkPolicy_SameNamespaceIngressDisabledKeepsMetricsPolicy(t *testing.T) {
+	instance := newTestInstance("np-explicit-metrics")
+	instance.Spec.Security.NetworkPolicy.AllowSameNamespaceIngress = Ptr(false)
+	instance.Spec.Networking.MetricsIngress = &openclawv1alpha1.MetricsIngressSpec{
+		From:              openclawv1alpha1.MetricsIngressFromAllowedPeers,
+		AllowedNamespaces: []string{"monitoring"},
+	}
+
+	np := BuildNetworkPolicy(instance)
+	rules := metricsIngressRules(np, int(DefaultMetricsPort))
+	if len(rules) != 1 {
+		t.Fatalf("expected 1 metrics ingress rule, got %d", len(rules))
+	}
+	peer := rules[0].From[0]
+	if peer.NamespaceSelector == nil ||
+		peer.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "monitoring" {
+		t.Errorf("metrics rule should allow the monitoring namespace, got %v", peer)
+	}
+	for i, rule := range np.Spec.Ingress {
+		if ruleHasPort(rule, GatewayProxyPort) || ruleHasPort(rule, CanvasProxyPort) {
+			t.Errorf("rule %d should not retain implicit same-namespace application ports", i)
+		}
+	}
+}
+
 func TestBuildNetworkPolicy_CustomServicePorts(t *testing.T) {
 	instance := newTestInstance("np-custom-ports")
 	instance.Spec.Networking.Service.Ports = []openclawv1alpha1.ServicePortSpec{
@@ -2426,11 +2487,10 @@ func TestBuildConfigMapFromBytes_EnrichesExternalConfig(t *testing.T) {
 		t.Errorf("gateway.bind = %v, want %q", gw["bind"], "loopback")
 	}
 
-	// Device auth is no longer injected (retired in OpenClaw 2026.8.x). The
-	// enrichment must not create gateway.controlUi or set the key.
+	// The operator must not emit OpenClaw's retired device-auth bypass.
 	if controlUI, ok := gw["controlUi"].(map[string]interface{}); ok {
 		if _, present := controlUI["dangerouslyDisableDeviceAuth"]; present {
-			t.Errorf("gateway.controlUi.dangerouslyDisableDeviceAuth should be absent, got %v", controlUI["dangerouslyDisableDeviceAuth"])
+			t.Error("gateway.controlUi.dangerouslyDisableDeviceAuth should not be emitted")
 		}
 	}
 }
@@ -2766,6 +2826,15 @@ func TestBuildStatefulSet_OTelCollectorContainer(t *testing.T) {
 			continue
 		}
 		found = true
+		if c.Image != DefaultOTelCollectorImage+":"+DefaultOTelCollectorTag {
+			t.Errorf("otel-collector image = %q, want default image", c.Image)
+		}
+		if c.Resources.Requests.Cpu().Cmp(resource.MustParse("25m")) != 0 ||
+			c.Resources.Requests.Memory().Cmp(resource.MustParse("32Mi")) != 0 ||
+			c.Resources.Limits.Cpu().Cmp(resource.MustParse("100m")) != 0 ||
+			c.Resources.Limits.Memory().Cmp(resource.MustParse("128Mi")) != 0 {
+			t.Errorf("otel-collector resources = %#v, want defaults", c.Resources)
+		}
 		// Verify metrics port is on the collector
 		assertContainerPort(t, c.Ports, "metrics", DefaultMetricsPort)
 		// Verify config volume mount (directory mount, no SubPath)
@@ -2788,6 +2857,77 @@ func TestBuildStatefulSet_OTelCollectorContainer(t *testing.T) {
 	}
 	if !found {
 		t.Error("StatefulSet should have otel-collector container when metrics enabled")
+	}
+}
+
+func TestBuildStatefulSet_OTelCollectorOverrides(t *testing.T) {
+	tests := []struct {
+		name     string
+		image    openclawv1alpha1.OTelCollectorImageSpec
+		registry string
+		want     string
+	}{
+		{
+			name: "repository and tag",
+			image: openclawv1alpha1.OTelCollectorImageSpec{
+				Repository: "example.com/otel/collector",
+				Tag:        "1.2.3",
+			},
+			want: "example.com/otel/collector:1.2.3",
+		},
+		{
+			name: "digest takes precedence",
+			image: openclawv1alpha1.OTelCollectorImageSpec{
+				Repository: "example.com/otel/collector",
+				Tag:        "ignored",
+				Digest:     "sha256:collectorhash",
+			},
+			want: "example.com/otel/collector@sha256:collectorhash",
+		},
+		{
+			name:     "global registry override",
+			registry: "mirror.example.com",
+			image: openclawv1alpha1.OTelCollectorImageSpec{
+				Repository: "otel/opentelemetry-collector",
+				Digest:     "sha256:collectorhash",
+			},
+			want: "mirror.example.com/otel/opentelemetry-collector@sha256:collectorhash",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			instance := newTestInstance("sts-otel-collector-overrides")
+			instance.Spec.Registry = tt.registry
+			instance.Spec.Observability.Metrics.Collector = openclawv1alpha1.OTelCollectorSpec{
+				Image: tt.image,
+				Resources: openclawv1alpha1.ResourcesSpec{
+					Requests: openclawv1alpha1.ResourceList{CPU: "40m", Memory: "96Mi"},
+					Limits:   openclawv1alpha1.ResourceList{CPU: "250m", Memory: "256Mi"},
+				},
+			}
+
+			sts := BuildStatefulSet(instance, "", nil, nil, nil)
+			var collector *corev1.Container
+			for i := range sts.Spec.Template.Spec.Containers {
+				if sts.Spec.Template.Spec.Containers[i].Name == "otel-collector" {
+					collector = &sts.Spec.Template.Spec.Containers[i]
+					break
+				}
+			}
+			if collector == nil {
+				t.Fatal("otel-collector container not found")
+			}
+			if collector.Image != tt.want {
+				t.Errorf("otel-collector image = %q, want %q", collector.Image, tt.want)
+			}
+			if collector.Resources.Requests.Cpu().Cmp(resource.MustParse("40m")) != 0 ||
+				collector.Resources.Requests.Memory().Cmp(resource.MustParse("96Mi")) != 0 ||
+				collector.Resources.Limits.Cpu().Cmp(resource.MustParse("250m")) != 0 ||
+				collector.Resources.Limits.Memory().Cmp(resource.MustParse("256Mi")) != 0 {
+				t.Errorf("otel-collector resources = %#v, want configured values", collector.Resources)
+			}
+		})
 	}
 }
 
@@ -2891,92 +3031,6 @@ func TestEnrichConfigWithGatewayBind_InvalidJSON(t *testing.T) {
 	input := []byte(`not valid json`)
 	instance := newTestInstance("bind-invalid-json")
 	out, err := enrichConfigWithGatewayBind(input, instance)
-	if err != nil {
-		t.Fatal("should not error on invalid JSON")
-	}
-
-	if !bytes.Equal(out, input) {
-		t.Errorf("invalid JSON should be returned unchanged")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// enrichConfigWithDeviceAuth tests
-// ---------------------------------------------------------------------------
-
-func TestEnrichConfigWithDeviceAuth(t *testing.T) {
-	input := []byte(`{}`)
-	out, err := enrichConfigWithDeviceAuth(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var cfg map[string]interface{}
-	if err := json.Unmarshal(out, &cfg); err != nil {
-		t.Fatal(err)
-	}
-
-	// Device auth injection was retired in OpenClaw 2026.8.x, so enrichment is a
-	// no-op: an empty input must not gain a gateway.controlUi key.
-	if gw, ok := cfg["gateway"].(map[string]interface{}); ok {
-		if controlUI, ok := gw["controlUi"].(map[string]interface{}); ok {
-			if _, present := controlUI["dangerouslyDisableDeviceAuth"]; present {
-				t.Errorf("gateway.controlUi.dangerouslyDisableDeviceAuth should be absent, got %v", controlUI["dangerouslyDisableDeviceAuth"])
-			}
-		}
-	}
-}
-
-func TestEnrichConfigWithDeviceAuth_PreservesUserOverride(t *testing.T) {
-	input := []byte(`{"gateway":{"controlUi":{"dangerouslyDisableDeviceAuth":false}}}`)
-	out, err := enrichConfigWithDeviceAuth(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var cfg map[string]interface{}
-	if err := json.Unmarshal(out, &cfg); err != nil {
-		t.Fatal(err)
-	}
-
-	gw := cfg["gateway"].(map[string]interface{})
-	controlUI := gw["controlUi"].(map[string]interface{})
-	if controlUI["dangerouslyDisableDeviceAuth"] != false {
-		t.Errorf("gateway.controlUi.dangerouslyDisableDeviceAuth = %v, want false (user override)", controlUI["dangerouslyDisableDeviceAuth"])
-	}
-}
-
-func TestEnrichConfigWithDeviceAuth_PreservesOtherFields(t *testing.T) {
-	input := []byte(`{"gateway":{"auth":{"mode":"token","token":"secret"}}}`)
-	out, err := enrichConfigWithDeviceAuth(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var cfg map[string]interface{}
-	if err := json.Unmarshal(out, &cfg); err != nil {
-		t.Fatal(err)
-	}
-
-	gw := cfg["gateway"].(map[string]interface{})
-	// Device auth injection was retired, so gateway.controlUi must NOT be created.
-	if controlUI, ok := gw["controlUi"].(map[string]interface{}); ok {
-		if _, present := controlUI["dangerouslyDisableDeviceAuth"]; present {
-			t.Errorf("gateway.controlUi.dangerouslyDisableDeviceAuth should be absent, got %v", controlUI["dangerouslyDisableDeviceAuth"])
-		}
-	}
-	auth, ok := gw["auth"].(map[string]interface{})
-	if !ok {
-		t.Fatal("gateway.auth should be preserved")
-	}
-	if auth["token"] != "secret" {
-		t.Errorf("gateway.auth.token = %v, want %q", auth["token"], "secret")
-	}
-}
-
-func TestEnrichConfigWithDeviceAuth_InvalidJSON(t *testing.T) {
-	input := []byte(`not valid json`)
-	out, err := enrichConfigWithDeviceAuth(input)
 	if err != nil {
 		t.Fatal("should not error on invalid JSON")
 	}
@@ -8224,6 +8278,33 @@ func TestBuildStatefulSet_RuntimeDeps_Python(t *testing.T) {
 	}
 }
 
+func TestBuildStatefulSet_RuntimeDeps_CustomUVImage(t *testing.T) {
+	instance := newTestInstance("custom-uv")
+	instance.Spec.RuntimeDeps.Python = true
+	instance.Spec.RuntimeDeps.UVImage = &openclawv1alpha1.UVImageSpec{
+		Repository: "registry.example.com/platform/uv",
+		Digest:     "sha256:abc123",
+	}
+
+	sts := BuildStatefulSet(instance, "", nil, nil, nil)
+	want := "registry.example.com/platform/uv@sha256:abc123"
+	seen := map[string]bool{"init-uv": false, "init-python": false}
+	for _, container := range sts.Spec.Template.Spec.InitContainers {
+		if _, ok := seen[container.Name]; !ok {
+			continue
+		}
+		seen[container.Name] = true
+		if container.Image != want {
+			t.Errorf("%s image = %q, want %q", container.Name, container.Image, want)
+		}
+	}
+	for name, found := range seen {
+		if !found {
+			t.Errorf("%s container not found", name)
+		}
+	}
+}
+
 func TestBuildStatefulSet_RuntimeDeps_Both(t *testing.T) {
 	instance := newTestInstance("both-deps")
 	instance.Spec.RuntimeDeps.Pnpm = true
@@ -9390,10 +9471,8 @@ func TestBuildConfigMap_ChromiumBrowserConfig(t *testing.T) {
 		t.Errorf("browser.attachOnly = %v, want true", browser["attachOnly"])
 	}
 
-	// remoteCdpTimeoutMs was retired in OpenClaw 2026.8.x and is no longer
-	// injected by default; the key must be absent when the user didn't set it.
-	if _, present := browser["remoteCdpTimeoutMs"]; present {
-		t.Errorf("browser.remoteCdpTimeoutMs should be absent by default, got %v", browser["remoteCdpTimeoutMs"])
+	if _, hasRemoteCdpTimeout := browser["remoteCdpTimeoutMs"]; hasRemoteCdpTimeout {
+		t.Error("browser.remoteCdpTimeoutMs is not part of the canonical OpenClaw config")
 	}
 
 	profiles, ok := browser["profiles"].(map[string]interface{})
@@ -9412,10 +9491,8 @@ func TestBuildConfigMap_ChromiumBrowserConfig(t *testing.T) {
 		if p["cdpUrl"] != expectedCDP {
 			t.Errorf("browser.profiles.%s.cdpUrl = %v, want %q", name, p["cdpUrl"], expectedCDP)
 		}
-		// A default profile "color" is no longer injected (retired in OpenClaw
-		// 2026.8.x); it must be absent when the user didn't set it.
-		if _, present := p["color"]; present {
-			t.Errorf("browser.profiles.%s.color should be absent by default, got %v", name, p["color"])
+		if _, ok := p["color"]; ok {
+			t.Errorf("browser.profiles.%s.color is not part of the canonical OpenClaw config", name)
 		}
 	}
 }
@@ -9538,30 +9615,6 @@ func TestBuildConfigMap_ChromiumUserOverrideCdpPort(t *testing.T) {
 	// cdpPort should be preserved
 	if defaultProfile["cdpPort"] != float64(18800) {
 		t.Errorf("user-set cdpPort should be preserved, got %v", defaultProfile["cdpPort"])
-	}
-}
-
-func TestBuildConfigMap_ChromiumUserOverrideRemoteCdpTimeout(t *testing.T) {
-	instance := newTestInstance("cr-override-timeout")
-	instance.Spec.Chromium.Enabled = true
-	instance.Spec.Config.Raw = &openclawv1alpha1.RawConfig{
-		RawExtension: runtime.RawExtension{
-			Raw: []byte(`{"browser":{"remoteCdpTimeoutMs":60000}}`),
-		},
-	}
-
-	cm := BuildConfigMap(instance, "", nil)
-	content := cm.Data["openclaw.json"]
-
-	var parsed map[string]interface{}
-	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
-		t.Fatalf("failed to parse config JSON: %v", err)
-	}
-
-	browser := parsed["browser"].(map[string]interface{})
-	timeout := browser["remoteCdpTimeoutMs"].(float64)
-	if timeout != 60000 {
-		t.Errorf("user-set remoteCdpTimeoutMs should be preserved, got %v", timeout)
 	}
 }
 
@@ -10184,6 +10237,72 @@ func TestBuildPrometheusRule(t *testing.T) {
 			t.Errorf("rule %d runbook_url = %q, expected default base URL", i, runbook)
 		}
 	}
+}
+
+func TestBuildPrometheusRule_PVCClaimSelection(t *testing.T) {
+	tests := []struct {
+		name     string
+		mutate   func(*openclawv1alpha1.OpenClawInstance)
+		wantExpr string
+	}{
+		{
+			name:     "managed singleton claim",
+			mutate:   func(*openclawv1alpha1.OpenClawInstance) {},
+			wantExpr: `persistentvolumeclaim="my-instance-data"`,
+		},
+		{
+			name: "existing claim",
+			mutate: func(instance *openclawv1alpha1.OpenClawInstance) {
+				instance.Spec.Storage.Persistence.ExistingClaim = "restored-openclaw-data"
+			},
+			wantExpr: `persistentvolumeclaim="restored-openclaw-data"`,
+		},
+		{
+			name: "autoscaled claim templates",
+			mutate: func(instance *openclawv1alpha1.OpenClawInstance) {
+				instance.Spec.Availability.AutoScaling = &openclawv1alpha1.AutoScalingSpec{
+					Enabled: Ptr(true),
+				}
+			},
+			wantExpr: `persistentvolumeclaim=~"data-my-instance-[0-9]+"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			instance := newTestInstance("my-instance")
+			tt.mutate(instance)
+
+			expr, ok := prometheusAlertExpr(buildAlerts(instance, defaultRunbookBaseURL), "OpenClawPVCNearlyFull")
+			if !ok {
+				t.Fatal("missing OpenClawPVCNearlyFull alert")
+			}
+			if !strings.Contains(expr, tt.wantExpr) {
+				t.Errorf("PVC alert expression = %q, want selector %q", expr, tt.wantExpr)
+			}
+		})
+	}
+}
+
+func TestBuildPrometheusRule_PersistenceDisabledOmitsPVCAlert(t *testing.T) {
+	instance := newTestInstance("my-instance")
+	instance.Spec.Storage.Persistence.Enabled = Ptr(false)
+
+	if _, ok := prometheusAlertExpr(buildAlerts(instance, defaultRunbookBaseURL), "OpenClawPVCNearlyFull"); ok {
+		t.Fatal("OpenClawPVCNearlyFull alert should be omitted when persistence is disabled")
+	}
+}
+
+func prometheusAlertExpr(alerts []interface{}, alertName string) (string, bool) {
+	for _, candidate := range alerts {
+		rule, ok := candidate.(map[string]interface{})
+		if !ok || rule["alert"] != alertName {
+			continue
+		}
+		expr, ok := rule["expr"].(string)
+		return expr, ok
+	}
+	return "", false
 }
 
 // ---------------------------------------------------------------------------
@@ -11678,6 +11797,46 @@ func TestBuildStatefulSet_HasGatewayProxyContainer(t *testing.T) {
 	if memReq.Cmp(resource.MustParse("16Mi")) != 0 {
 		t.Errorf("proxy memory request = %v, want 16Mi", memReq.String())
 	}
+	cpuLimit := proxy.Resources.Limits[corev1.ResourceCPU]
+	if cpuLimit.String() != "100m" {
+		t.Errorf("proxy cpu limit = %v, want 100m", cpuLimit.String())
+	}
+	memLimit := proxy.Resources.Limits[corev1.ResourceMemory]
+	if memLimit.Cmp(resource.MustParse("64Mi")) != 0 {
+		t.Errorf("proxy memory limit = %v, want 64Mi", memLimit.String())
+	}
+}
+
+func TestBuildStatefulSet_GatewayProxyCustomImageAndResources(t *testing.T) {
+	instance := newTestInstance("gw-proxy-custom")
+	instance.Spec.Gateway.Image = openclawv1alpha1.GatewayProxyImageSpec{
+		Repository: "registry.example.com/platform/nginx",
+		Digest:     "sha256:abc123",
+	}
+	instance.Spec.Gateway.Resources = openclawv1alpha1.ResourcesSpec{
+		Requests: openclawv1alpha1.ResourceList{CPU: "25m", Memory: "32Mi"},
+		Limits:   openclawv1alpha1.ResourceList{CPU: "250m", Memory: "128Mi"},
+	}
+
+	sts := BuildStatefulSet(instance, "", nil, nil, nil)
+	var proxy *corev1.Container
+	for i := range sts.Spec.Template.Spec.Containers {
+		if sts.Spec.Template.Spec.Containers[i].Name == "gateway-proxy" {
+			proxy = &sts.Spec.Template.Spec.Containers[i]
+			break
+		}
+	}
+	if proxy == nil {
+		t.Fatal("gateway-proxy container not found")
+	}
+
+	if proxy.Image != "registry.example.com/platform/nginx@sha256:abc123" {
+		t.Errorf("proxy image = %q, want digest-pinned custom image", proxy.Image)
+	}
+	assertResourceQuantity(t, proxy.Resources.Requests, corev1.ResourceCPU, "25m")
+	assertResourceQuantity(t, proxy.Resources.Requests, corev1.ResourceMemory, "32Mi")
+	assertResourceQuantity(t, proxy.Resources.Limits, corev1.ResourceCPU, "250m")
+	assertResourceQuantity(t, proxy.Resources.Limits, corev1.ResourceMemory, "128Mi")
 }
 
 func TestBuildStatefulSet_GatewayProxyTmpVolume(t *testing.T) {

@@ -52,8 +52,12 @@ const (
 	// canvas traffic. The Service targets this port instead of CanvasPort.
 	CanvasProxyPort = 18794
 
-	// DefaultGatewayProxyImage is the default image for the gateway proxy sidecar
-	DefaultGatewayProxyImage = "docker.io/library/nginx:1.27-alpine"
+	// DefaultGatewayProxyImageRepository is the default gateway proxy image repository.
+	DefaultGatewayProxyImageRepository = "docker.io/library/nginx"
+	// DefaultGatewayProxyImageTag is the default gateway proxy image tag.
+	DefaultGatewayProxyImageTag = "1.27-alpine"
+	// DefaultGatewayProxyImage is the default image for the gateway proxy sidecar.
+	DefaultGatewayProxyImage = DefaultGatewayProxyImageRepository + ":" + DefaultGatewayProxyImageTag
 
 	// NginxConfigKey is the ConfigMap data key for the nginx stream config
 	NginxConfigKey = "nginx.conf"
@@ -122,9 +126,13 @@ const (
 	// DefaultCABundleKey is the default key in a ConfigMap or Secret for the CA bundle
 	DefaultCABundleKey = "ca-bundle.crt"
 
+	// DefaultUVImageRepository is the default uv bootstrap image repository.
+	DefaultUVImageRepository = "ghcr.io/astral-sh/uv"
+	// DefaultUVImageTag is the default uv bootstrap image tag.
+	DefaultUVImageTag = "0.6-bookworm-slim"
 	// UvImage is the image used for Python/uv runtime dependency installation.
 	// Must be a shell-capable variant (not distroless) since the init script uses sh -c.
-	UvImage = "ghcr.io/astral-sh/uv:0.6-bookworm-slim"
+	UvImage = DefaultUVImageRepository + ":" + DefaultUVImageTag
 
 	// RuntimeDepsLocalBin is the path where runtime dependency binaries are installed on the PVC
 	RuntimeDepsLocalBin = "/home/openclaw/.openclaw/.local/bin"
@@ -458,6 +466,49 @@ func GetTailscaleImage(instance *openclawv1alpha1.OpenClawInstance) string {
 		}
 		image = repo + ":" + tag
 	}
+	return ApplyRegistryOverride(image, instance.Spec.Registry)
+}
+
+// GetUVImage returns the full uv bootstrap image reference.
+func GetUVImage(instance *openclawv1alpha1.OpenClawInstance) string {
+	imageSpec := instance.Spec.RuntimeDeps.UVImage
+	repo := DefaultUVImageRepository
+	if imageSpec != nil && imageSpec.Repository != "" {
+		repo = imageSpec.Repository
+	}
+
+	var image string
+	if imageSpec != nil && imageSpec.Digest != "" {
+		image = repo + "@" + imageSpec.Digest
+	} else {
+		tag := DefaultUVImageTag
+		if imageSpec != nil && imageSpec.Tag != "" {
+			tag = imageSpec.Tag
+		}
+		image = repo + ":" + tag
+	}
+
+	return ApplyRegistryOverride(image, instance.Spec.Registry)
+}
+
+// GetGatewayProxyImage returns the full gateway proxy image reference.
+func GetGatewayProxyImage(instance *openclawv1alpha1.OpenClawInstance) string {
+	repo := instance.Spec.Gateway.Image.Repository
+	if repo == "" {
+		repo = DefaultGatewayProxyImageRepository
+	}
+
+	var image string
+	if instance.Spec.Gateway.Image.Digest != "" {
+		image = repo + "@" + instance.Spec.Gateway.Image.Digest
+	} else {
+		tag := instance.Spec.Gateway.Image.Tag
+		if tag == "" {
+			tag = DefaultGatewayProxyImageTag
+		}
+		image = repo + ":" + tag
+	}
+
 	return ApplyRegistryOverride(image, instance.Spec.Registry)
 }
 
