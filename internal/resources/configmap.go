@@ -45,7 +45,7 @@ func BuildConfigMap(instance *openclawv1alpha1.OpenClawInstance, gatewayToken st
 // BuildConfigMapFromBytes creates a ConfigMap for the OpenClawInstance using
 // the provided base config bytes. This allows the controller to pass config
 // from any source (inline raw, external ConfigMap, or empty default).
-// The enrichment pipeline (OTel metrics, gateway auth, device auth, tailscale,
+// The enrichment pipeline (OTel metrics, gateway auth, tailscale,
 // browser, gateway bind, skill packs) always runs on the provided bytes.
 func BuildConfigMapFromBytes(instance *openclawv1alpha1.OpenClawInstance, baseConfig []byte, gatewayToken string, skillPacks *ResolvedSkillPacks) *corev1.ConfigMap {
 	labels := Labels(instance)
@@ -55,7 +55,7 @@ func BuildConfigMapFromBytes(instance *openclawv1alpha1.OpenClawInstance, baseCo
 		configBytes = []byte("{}")
 	}
 
-	// Enrichment pipeline: gateway mode -> OTel metrics -> gateway auth -> device auth -> tailscale -> browser -> gateway bind -> trusted proxies -> control UI origins -> skill packs
+	// Enrichment pipeline: gateway mode -> OTel metrics -> gateway auth -> tailscale -> browser -> gateway bind -> trusted proxies -> control UI origins -> skill packs
 	if enriched, err := enrichConfigWithGatewayMode(configBytes); err == nil {
 		configBytes = enriched
 	}
@@ -68,9 +68,6 @@ func BuildConfigMapFromBytes(instance *openclawv1alpha1.OpenClawInstance, baseCo
 		if enriched, err := enrichConfigWithGatewayAuth(configBytes, gatewayToken); err == nil {
 			configBytes = enriched
 		}
-	}
-	if enriched, err := enrichConfigWithDeviceAuth(configBytes); err == nil {
-		configBytes = enriched
 	}
 	// Mesh provider config enrichment, e.g. Tailscale SSO auth mode (#560)
 	if mesh := ActiveMeshProvider(instance); mesh != nil {
@@ -285,16 +282,6 @@ service:
 `, OTelHTTPReceiverPort, MetricsPort(instance))
 }
 
-// enrichConfigWithDeviceAuth previously injected
-// gateway.controlUi.dangerouslyDisableDeviceAuth=true. As of OpenClaw 2026.8.x that
-// key is retired: the runtime logs it as a legacy key ("run openclaw doctor --fix")
-// and Control UI browsers now pair through the normal device flow. Injecting it is at
-// best noise and blocks a clean config, so this is now a no-op. Kept as a seam in case
-// a future runtime needs a replacement knob.
-func enrichConfigWithDeviceAuth(configJSON []byte) ([]byte, error) {
-	return configJSON, nil
-}
-
 // enrichConfigWithTailscale injects Tailscale-related settings into the config JSON.
 // The Tailscale sidecar handles serve/funnel declaratively via TS_SERVE_CONFIG,
 // so we no longer set gateway.tailscale.mode or gateway.tailscale.resetOnExit.
@@ -392,9 +379,6 @@ func BuildTailscaleServeConfig(instance *openclawv1alpha1.OpenClawInstance) stri
 //   - attachOnly=true: skips local browser binary detection. Without this,
 //     OpenClaw checks for a local Chrome/Chromium binary first, fails with
 //     "No supported browser found", and never attempts the remote CDP connection.
-//   - remoteCdpTimeoutMs=30000: gives the browser service time to become ready
-//     on startup, avoiding permanent failure when tool registration wins the
-//     race against browser service initialization.
 //   - cdpUrl on "default" and "chrome" profiles: resolved at config build time
 //     to the headless CDP Service DNS name (not an env var reference).
 //
@@ -426,11 +410,6 @@ func enrichConfigWithBrowser(configJSON []byte) ([]byte, error) {
 		browser["attachOnly"] = true
 	}
 
-	// NOTE: remoteCdpTimeoutMs was injected here (default 30000) to give the
-	// browser service time to become ready. OpenClaw 2026.8.x retired the key and
-	// the runtime now rejects it as an unrecognized key, failing config validation,
-	// so it is no longer set. Browser-service readiness is handled elsewhere.
-
 	profiles, _ := browser["profiles"].(map[string]interface{})
 	if profiles == nil {
 		profiles = make(map[string]interface{})
@@ -458,10 +437,6 @@ func enrichConfigWithBrowser(configJSON []byte) ([]byte, error) {
 				profile["cdpUrl"] = cdpURL
 			}
 		}
-
-		// NOTE: a default profile "color" (#4285F4) was injected here because older
-		// OpenClaw builds required it. 2026.8.x retired it and the runtime now rejects
-		// "color" as an unrecognized key, failing config validation, so it is no longer set.
 
 		profiles[profileName] = profile
 	}

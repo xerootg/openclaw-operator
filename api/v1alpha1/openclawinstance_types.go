@@ -653,6 +653,13 @@ type NetworkPolicySpec struct {
 	// +optional
 	AllowedIngressNamespaces []string `json:"allowedIngressNamespaces,omitempty"`
 
+	// AllowSameNamespaceIngress allows application traffic from all pods in the instance namespace.
+	// Disable this when application ingress is fully described by the explicit namespace or CIDR lists.
+	// Metrics ingress is configured independently through networking.metricsIngress.
+	// +kubebuilder:default=true
+	// +optional
+	AllowSameNamespaceIngress *bool `json:"allowSameNamespaceIngress,omitempty"`
+
 	// AllowedEgressCIDRs is a list of CIDRs this instance can reach
 	// Default allows all egress on port 443 for AI APIs
 	// +optional
@@ -1494,6 +1501,11 @@ type MetricsSpec struct {
 	// +optional
 	Port *int32 `json:"port,omitempty"`
 
+	// Collector configures the OpenTelemetry Collector sidecar that receives
+	// OTLP metrics from OpenClaw and exposes them for Prometheus scraping.
+	// +optional
+	Collector OTelCollectorSpec `json:"collector,omitempty"`
+
 	// ServiceMonitor configures the Prometheus ServiceMonitor
 	// +optional
 	ServiceMonitor *ServiceMonitorSpec `json:"serviceMonitor,omitempty"`
@@ -1505,6 +1517,35 @@ type MetricsSpec struct {
 	// GrafanaDashboard configures auto-provisioned Grafana dashboard ConfigMaps
 	// +optional
 	GrafanaDashboard *GrafanaDashboardSpec `json:"grafanaDashboard,omitempty"`
+}
+
+// OTelCollectorSpec configures the OpenTelemetry Collector metrics sidecar.
+type OTelCollectorSpec struct {
+	// Image configures the OpenTelemetry Collector container image.
+	// +optional
+	Image OTelCollectorImageSpec `json:"image,omitempty"`
+
+	// Resources specifies compute resources for the OpenTelemetry Collector.
+	// +optional
+	Resources ResourcesSpec `json:"resources,omitempty"`
+}
+
+// OTelCollectorImageSpec defines the OpenTelemetry Collector container image.
+type OTelCollectorImageSpec struct {
+	// Repository is the container image repository.
+	// +kubebuilder:default="otel/opentelemetry-collector"
+	// +optional
+	Repository string `json:"repository,omitempty"`
+
+	// Tag is the container image tag.
+	// +kubebuilder:default="0.120.0"
+	// +optional
+	Tag string `json:"tag,omitempty"`
+
+	// Digest is the container image digest for supply chain security.
+	// When set, it takes precedence over Tag.
+	// +optional
+	Digest string `json:"digest,omitempty"`
 }
 
 // ServiceMonitorSpec defines the ServiceMonitor configuration
@@ -1697,6 +1738,29 @@ type RuntimeDepsSpec struct {
 	// Python installs Python 3.12 and uv for Python-based MCP servers and skills.
 	// +optional
 	Python bool `json:"python,omitempty"`
+
+	// UVImage configures the uv bootstrap image used by the built-in init-uv
+	// and init-python containers.
+	// +optional
+	UVImage *UVImageSpec `json:"uvImage,omitempty"`
+}
+
+// UVImageSpec defines the uv bootstrap container image.
+type UVImageSpec struct {
+	// Repository is the container image repository.
+	// +kubebuilder:default="ghcr.io/astral-sh/uv"
+	// +optional
+	Repository string `json:"repository,omitempty"`
+
+	// Tag is the container image tag.
+	// +kubebuilder:default="0.6-bookworm-slim"
+	// +optional
+	Tag string `json:"tag,omitempty"`
+
+	// Digest is the container image digest for supply chain security.
+	// When set, it takes precedence over Tag.
+	// +optional
+	Digest string `json:"digest,omitempty"`
 }
 
 // GatewaySpec configures the gateway reverse proxy and authentication token
@@ -1708,6 +1772,14 @@ type GatewaySpec struct {
 	// +optional
 	// +kubebuilder:default=true
 	Enabled *bool `json:"enabled,omitempty"`
+
+	// Image configures the built-in gateway proxy container image.
+	// +optional
+	Image GatewayProxyImageSpec `json:"image,omitempty"`
+
+	// Resources specifies compute resources for the built-in gateway proxy.
+	// +optional
+	Resources ResourcesSpec `json:"resources,omitempty"`
 
 	// ExistingSecret is the name of a user-managed Secret containing the gateway token.
 	// The Secret must have a key named "token". When set, the operator skips
@@ -1722,6 +1794,24 @@ type GatewaySpec struct {
 	// +kubebuilder:validation:MaxItems=20
 	// +optional
 	ControlUIOrigins []string `json:"controlUiOrigins,omitempty"`
+}
+
+// GatewayProxyImageSpec defines the built-in gateway proxy container image.
+type GatewayProxyImageSpec struct {
+	// Repository is the container image repository.
+	// +kubebuilder:default="docker.io/library/nginx"
+	// +optional
+	Repository string `json:"repository,omitempty"`
+
+	// Tag is the container image tag.
+	// +kubebuilder:default="1.27-alpine"
+	// +optional
+	Tag string `json:"tag,omitempty"`
+
+	// Digest is the container image digest for supply chain security.
+	// When set, it takes precedence over Tag.
+	// +optional
+	Digest string `json:"digest,omitempty"`
 }
 
 // AutoUpdateStatus tracks the state of automatic version updates

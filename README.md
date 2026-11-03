@@ -77,7 +77,7 @@ Every request is validated against the instance's allowlist policy. Protected co
 | **Config Modes** | Merge or overwrite | `overwrite` replaces config on restart; `merge` deep-merges with PVC config, preserving runtime changes. Config is restored on every container restart via init container. |
 | **Force Paths** | Operator-owned paths under merge | `config.forcePaths` lists dot-paths the init container rebuilds from the CR on every restart even under `mergeMode: merge` -- lets managed deployers keep operator-owned config (auth, allowed providers, sandbox image) immune to tenant edits while user-owned config persists |
 | **Skills** | Declarative install | Install ClawHub skills, npm packages, or GitHub-hosted skill packs via `spec.skills` - supports `npm:` and `pack:` prefixes. Additional workspaces can declare their own workspace-scoped skills via `additionalWorkspaces[].skills` |
-| **Plugins** | Declarative install | Install OpenClaw plugins via `spec.plugins` - resolved through the OpenClaw CLI ClawHub installer in a secure init container |
+| **Plugins** | Declarative install | Install OpenClaw plugins via `spec.plugins` - resolved through the OpenClaw CLI ClawHub installer in a secure init container with private temporary storage |
 | **Runtime Deps** | pnpm & Python/uv | Built-in init containers install pnpm (via corepack) or Python 3.12 + uv for MCP servers and skills |
 | **Auto-Update** | OCI registry polling | Opt-in version tracking: checks the registry for new semver releases, backs up first, rolls out, and auto-rolls back if the new version fails health checks |
 | **Scalable** | Auto-scaling | HPA integration with CPU and memory metrics, min/max replica bounds, automatic StatefulSet replica management |
@@ -86,7 +86,7 @@ Every request is validated against the instance's allowlist policy. Protected co
 | **Disk-Aware Readiness** | Opt-in ENOSPC guard | `spec.probes.diskReadiness` renders the readiness probe as an exec check that ANDs the gateway `/readyz` signal with a workspace writability + free-space check, so a full or read-only PVC drains the pod from Service endpoints instead of silently accepting writes it cannot persist. Liveness/startup stay HTTP so a full disk never turns into a CrashLoopBackOff. Defaulted off. |
 | **Backup/Restore** | S3-backed snapshots | Automatic backup to S3-compatible storage on deletion, pre-update, and on a cron schedule; restore into a new instance from any snapshot |
 | **Workspace Seeding** | Initial files & dirs | Pre-populate the workspace with files and directories before the agent starts; reference an external ConfigMap for GitOps workflows |
-| **Gateway Auth** | Auto-generated tokens | Automatic gateway token Secret per instance, bypassing mDNS pairing (unusable in k8s) |
+| **Gateway Auth** | Auto-generated tokens | Automatic shared-secret gateway authentication with a persistent token Secret per instance |
 | **Tailscale** | Tailnet access | Expose via Tailscale Serve or Funnel with SSO auth - no Ingress needed |
 | **Extensible** | Sidecars & init containers | Chromium for browser automation, Ollama for local LLMs, Tailscale for tailnet access, plus custom init containers and sidecars |
 | **Cloud Native** | SA annotations & CA bundles | AWS IRSA / GCP Workload Identity via ServiceAccount annotations; CA bundle injection for corporate proxies |
@@ -283,6 +283,24 @@ Config changes are detected via SHA-256 hashing and automatically trigger a roll
 
 By default, each pod includes an nginx reverse proxy sidecar that forwards traffic to the OpenClaw gateway on loopback. Set `spec.gateway.enabled: false` to disable it:
 
+```yaml
+spec:
+  gateway:
+    image:
+      repository: docker.io/library/nginx
+      tag: 1.27-alpine
+      # digest: sha256:...  # takes precedence over tag
+    resources:
+      requests:
+        cpu: 10m
+        memory: 16Mi
+      limits:
+        cpu: 100m
+        memory: 64Mi
+```
+
+The image and resource fields are optional. Omit them to retain the defaults above, or set an image digest to make the proxy supply-chain reference immutable.
+
 - Health probes and Service ports target the gateway directly on port 18789
 - `gateway.bind` is set to `0.0.0.0` instead of loopback
 - The `gateway-proxy` container and its tmp volume are omitted from the pod
@@ -310,14 +328,20 @@ spec:
 
 ### Gateway authentication
 
-The operator automatically generates a gateway token Secret for each instance and injects it into both the config JSON (`gateway.auth.mode: token`) and the `OPENCLAW_GATEWAY_TOKEN` env var. This bypasses Bonjour/mDNS pairing, which is unusable in Kubernetes.
+The operator automatically generates a gateway token Secret for each instance and injects it into both the config JSON (`gateway.auth.mode: token`) and the `OPENCLAW_GATEWAY_TOKEN` env var. The token authenticates the gateway connection. A browser's Control UI device identity and one-time pairing are separate security checks.
 
 - The token is generated once and never overwritten - rotate it by editing the Secret directly
 - If you set `gateway.auth.token` in your config or `OPENCLAW_GATEWAY_TOKEN` in `spec.env`, your value takes precedence
 - To bring your own token Secret, set `spec.gateway.existingSecret` - the operator will use it instead of auto-generating one (the Secret must have a key named `token`)
-- The operator automatically sets `gateway.controlUi.dangerouslyDisableDeviceAuth: true` - device pairing is incompatible with Kubernetes (users cannot approve pairing from inside a container, connections are always proxied, and mDNS is unavailable)
-- **Do not set `gateway.mode: local`** in your config - this mode is for desktop installs and enforces device identity checks that cannot work behind a reverse proxy in Kubernetes
-- When connecting to the Control UI through an Ingress, pass the gateway token in the URL fragment: `https://openclaw.example.com/#token=<your-token>`
+- The operator sets `OPENCLAW_DISABLE_BONJOUR=1` because mDNS discovery is not useful in Kubernetes. This does not disable Control UI device identity.
+- The operator sets `gateway.mode: local`, which current OpenClaw releases require for a gateway that owns local state. Exposure remains controlled by the Service, Ingress, mesh, and gateway bind settings.
+- Current OpenClaw releases ignore the retired `gateway.controlUi.dangerouslyDisableDeviceAuth` setting, so the operator does not emit it.
+- On the first browser connection, approve the pending device once from an administrative workstation:
+  ```bash
+  kubectl exec -n <namespace> <instance>-0 -c openclaw -- openclaw devices list
+  kubectl exec -n <namespace> <instance>-0 -c openclaw -- openclaw devices approve <request-id>
+  ```
+- Supplying the gateway token, including in the Control UI, does not replace browser device pairing.
 - Since v2026.2.24, OpenClaw restricts `gateway.allowedOrigins` to same-origin by default - if accessing via a non-default hostname (e.g. Ingress), set `gateway.allowedOrigins: ["*"]` in your config
 
 ### Control UI allowed origins
@@ -522,7 +546,7 @@ spec:
             primary: "anthropic/claude-sonnet-4-20250514"
 ```
 
-**Caveat:** In merge mode, removing a key from the CR does not remove it from the PVC config - the old value persists because deep-merge only adds or updates keys. If you need to remove stale config keys (e.g., after removing `gateway.mode: local`), temporarily switch to `mergeMode: overwrite`, apply, wait for the pod to restart, then switch back to `merge`.
+**Caveat:** In merge mode, removing a key from the CR does not remove it from the PVC config - the old value persists because deep-merge only adds or updates keys. If you need to remove a stale config key, temporarily switch to `mergeMode: overwrite`, apply, wait for the pod to restart, then switch back to `merge`.
 
 ### Partial overwrite under merge mode (`forcePaths`)
 
@@ -640,6 +664,8 @@ spec:
 ```
 
 Plugin entries are resolved through the OpenClaw CLI's ClawHub installer, not raw `npm install`. An optional `npm:` prefix is accepted for compatibility and stripped before installation, so `npm:@scope/plugin` and `@scope/plugin` both run as `openclaw plugins install clawhub:@scope/plugin`. Use `spec.skills` when you need npm package source selection for skills.
+
+The operator runs `init-plugin-scratch` before `init-plugins` to create a private `0700` temporary directory owned by the installer UID. Only that subdirectory is mounted at `/tmp` in the installer. The main container similarly mounts a `1777` (sticky) subdirectory prepared by `init-tmp-dir`. This avoids exposing `emptyDir` roots with fsGroup-managed mode `2777`, which OpenClaw 2026.10.x rejects as unsafe. No additional configuration is required.
 
 This is the layout the OpenClaw gateway's plugin discovery expects - it scans direct subdirectories of `~/.openclaw/extensions/` for plugin manifests and skips `node_modules/` entirely. The init container shells out to `openclaw plugins install clawhub:<pkg>` so plugins published with `workspace:*` dependency markers, such as the first-party `@openclaw/matrix`, resolve correctly. Raw `npm install` rejects those with `EUNSUPPORTEDPROTOCOL`.
 
@@ -936,7 +962,16 @@ spec:
   runtimeDeps:
     pnpm: true    # Installs pnpm via corepack
     python: true  # Installs Python 3.12 + uv
+    uvImage:
+      repository: ghcr.io/astral-sh/uv
+      tag: 0.6-bookworm-slim
+      # digest: sha256:...  # takes precedence over tag
 ```
+
+`uvImage` controls both the always-present `init-uv` bootstrap and the optional
+`init-python` installer. Omit it to retain the defaults above. Set a digest to
+make the bootstrap image reference immutable. Cluster defaults can provide the
+same block, while an instance-level `uvImage` takes precedence.
 
 ### Custom init containers and sidecars
 
@@ -1187,7 +1222,7 @@ The operator follows a **secure-by-default** philosophy. Every instance ships wi
 ### Defaults
 
 - **Non-root execution**: containers run as UID 1000; root (UID 0) is blocked by the validating webhook (exception: Ollama sidecar requires root per the official image)
-- **Read-only root filesystem**: enabled by default for the main container and the Chromium sidecar; the PVC at `~/.openclaw/` provides writable home, and a `/tmp` emptyDir handles temp files
+- **Read-only root filesystem**: enabled by default for the main container and the Chromium sidecar; the PVC at `~/.openclaw/` provides writable home, and a sticky `1777` subdirectory of an emptyDir provides the main container's `/tmp`
 - **All capabilities dropped**: no ambient Linux capabilities
 - **Seccomp RuntimeDefault**: syscall filtering enabled
 - **Default-deny NetworkPolicy**: only DNS (53) and HTTPS (443) egress allowed; ingress limited to same namespace. Metrics ingress is a separate rule that can be restricted independently -- see [Restricting who can scrape metrics](#restricting-who-can-scrape-metrics)
@@ -1254,6 +1289,28 @@ If you already set `diagnostics.otel` in your instance config, the operator fill
 | partial (e.g. only `enabled: true`) | operator adds the missing collector endpoint |
 | explicit `endpoint` | your endpoint is preserved |
 | explicit `enabled: false` | left untouched; no endpoint is injected |
+
+### Collector image and resources
+
+The collector keeps conservative defaults when `collector` is omitted. Override its image or resources when you need an immutable image reference, a registry mirror, or a larger workload-specific envelope:
+
+```yaml
+spec:
+  observability:
+    metrics:
+      collector:
+        image:
+          repository: otel/opentelemetry-collector
+          tag: "0.120.0"
+          # digest: sha256:...  # takes precedence over tag
+        resources:
+          requests:
+            cpu: 25m
+            memory: 64Mi
+          limits:
+            cpu: 250m
+            memory: 256Mi
+```
 
 ### ServiceMonitor
 
